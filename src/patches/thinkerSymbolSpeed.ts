@@ -5,29 +5,44 @@ import { LocationResult, showDiff } from './index';
 const getThinkerSymbolSpeedLocation = (
   oldFile: string
 ): LocationResult | null => {
-  // Use the original full regex to find the exact pattern
-  const speedPattern =
-    /[, ][$\w]+\(\(\)=>\{if\(![$\w]+\)\{[$\w]+\(\d+\);return\}[$\w]+\(\([^)]+\)=>[^)]+\+1\)\},(\d+)\)/;
-  const match = oldFile.match(speedPattern);
+  // CC 2.1.15+ format: setTimeout(()=>{z((J)=>J+1)},60)
+  const newSpeedPattern =
+    /setTimeout\(\(\)=>\{[$\w]+\(\([$\w]+\)=>[$\w]+\+1\)\},(\d+)\)/;
+  const newMatch = oldFile.match(newSpeedPattern);
 
-  if (!match || match.index == undefined) {
-    console.error('patch: thinker symbol speed: failed to find match');
-    return null;
+  if (newMatch && newMatch.index !== undefined) {
+    const fullMatchText = newMatch[0];
+    const capturedNumber = newMatch[1];
+    const numberIndex = fullMatchText.lastIndexOf(capturedNumber);
+    const startIndex = newMatch.index + numberIndex;
+    const endIndex = startIndex + capturedNumber.length;
+
+    return {
+      startIndex: startIndex,
+      endIndex: endIndex,
+    };
   }
 
-  // Find where the captured number starts and ends within the full match
-  const fullMatchText = match[0];
-  const capturedNumber = match[1];
+  // Old format: X(()=>{if(!frozen){setTimeout(60);return}setState((x)=>x+1)},60)
+  const oldSpeedPattern =
+    /[, ][$\w]+\(\(\)=>\{if\(![$\w]+\)\{[$\w]+\(\d+\);return\}[$\w]+\(\([^)]+\)=>[^)]+\+1\)\},(\d+)\)/;
+  const oldMatch = oldFile.match(oldSpeedPattern);
 
-  // Find the number within the full match
-  const numberIndex = fullMatchText.lastIndexOf(capturedNumber);
-  const startIndex = match.index + numberIndex;
-  const endIndex = startIndex + capturedNumber.length;
+  if (oldMatch && oldMatch.index !== undefined) {
+    const fullMatchText = oldMatch[0];
+    const capturedNumber = oldMatch[1];
+    const numberIndex = fullMatchText.lastIndexOf(capturedNumber);
+    const startIndex = oldMatch.index + numberIndex;
+    const endIndex = startIndex + capturedNumber.length;
 
-  return {
-    startIndex: startIndex,
-    endIndex: endIndex,
-  };
+    return {
+      startIndex: startIndex,
+      endIndex: endIndex,
+    };
+  }
+
+  console.error('patch: thinker symbol speed: failed to find match');
+  return null;
 };
 
 export const writeThinkerSymbolSpeed = (

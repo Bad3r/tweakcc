@@ -52,27 +52,35 @@ export const findSelectComponentName = (
 export const findDividerComponentName = (
   fileContents: string
 ): string | null => {
-  // Pattern matches the Divider component's function signature
-  const dividerPattern =
+  // Old pattern: direct destructuring in function signature
+  const dividerPatternOld =
     /function ([$\w]+)\(\{(?:(?:orientation|title|width|padding|titlePadding|titleColor|titleDimColor|dividerChar|dividerColor|dividerDimColor|boxProps):[$\w]+(?:=(?:[^,]+,|[^}]+\})|[,}]))+\)/g;
 
-  const matches = Array.from(fileContents.matchAll(dividerPattern));
-  if (matches.length === 0) {
-    console.error(
-      'patch: findDividerComponentName: failed to find dividerPattern'
-    );
-    return null;
-  }
-
-  // Return the longest match (most complete signature)
-  let longestMatch = matches[0];
-  for (const match of matches) {
-    if (match[0].length > longestMatch[0].length) {
-      longestMatch = match;
+  const matchesOld = Array.from(fileContents.matchAll(dividerPatternOld));
+  if (matchesOld.length > 0) {
+    // Return the longest match (most complete signature)
+    let longestMatch = matchesOld[0];
+    for (const match of matchesOld) {
+      if (match[0].length > longestMatch[0].length) {
+        longestMatch = match;
+      }
     }
+    return longestMatch[1];
   }
 
-  return longestMatch[1];
+  // New pattern (CC 2.1.15+): destructuring inside function body
+  // function X(A){...{orientation:q,title:Y,width:z,...dividerChar:O,...}=A
+  const dividerPatternNew =
+    /\bfunction ([$\w]+)\([$\w]+\)\{[^}]*\{orientation:[$\w]+,title:[$\w]+,width:[$\w]+,padding:[$\w]+,titlePadding:[$\w]+,titleColor:[$\w]+,titleDimColor:[$\w]+,dividerChar:[$\w]+/;
+  const matchNew = fileContents.match(dividerPatternNew);
+  if (matchNew) {
+    return matchNew[1];
+  }
+
+  console.error(
+    'patch: findDividerComponentName: failed to find dividerPattern'
+  );
+  return null;
 };
 
 /**
@@ -82,9 +90,9 @@ export const getMainAppComponentBodyStart = (
   fileContents: string
 ): number | null => {
   // Pattern matches the main app component function signature with all its props
-  // Updated for 2.1.x: removed initialPrompt, initialCheckpoints; added mainThreadAgentDefinition, disableSlashCommands
+  // Updated for CC 2.1.15: added initialAgentName, initialAgentColor
   const appComponentPattern =
-    /function ([$\w]+)\(\{(?:(?:commands|debug|initialPrompt|initialTools|initialMessages|initialCheckpoints|initialFileHistorySnapshots|mcpClients|dynamicMcpConfig|mcpCliEndpoint|autoConnectIdeFlag|strictMcpConfig|systemPrompt|appendSystemPrompt|onBeforeQuery|onTurnComplete|disabled|mainThreadAgentDefinition|disableSlashCommands):[$\w]+(?:=(?:[^,]+,|[^}]+\})|[,}]))+\)/g;
+    /function ([$\w]+)\(\{(?:(?:commands|debug|initialPrompt|initialTools|initialMessages|initialCheckpoints|initialFileHistorySnapshots|initialAgentName|initialAgentColor|mcpClients|dynamicMcpConfig|mcpCliEndpoint|autoConnectIdeFlag|strictMcpConfig|systemPrompt|appendSystemPrompt|onBeforeQuery|onTurnComplete|disabled|mainThreadAgentDefinition|disableSlashCommands|taskListId|autoTickIntervalMs):[$\w]+(?:=(?:[^,]+,|[^}]+\})|[,}]))+\)/g;
 
   const allMatches = Array.from(fileContents.matchAll(appComponentPattern));
   // Filter to only matches that contain 'commands:' - unique to main app component
@@ -562,32 +570,44 @@ export const findShiftTabAppStateVarInsertionPoint = (
     return null;
   }
 
-  // Get 500 chars before the match
-  const lookbackStart = Math.max(0, match.index - 500);
+  // Get 2000 chars before the match (increased for CC 2.1.15+)
+  const lookbackStart = Math.max(0, match.index - 2000);
   const chunk = oldFile.slice(lookbackStart, match.index);
 
-  // Find the function declaration pattern: function NAME({...}){
-  const functionPattern = /function ([$\w]+)\(\{[^}]+\}\)\{/g;
-  const matches = Array.from(chunk.matchAll(functionPattern));
+  // Old pattern: function NAME({...}){
+  const functionPatternOld = /function ([$\w]+)\(\{[^}]+\}\)\{/g;
+  const matchesOld = Array.from(chunk.matchAll(functionPatternOld));
 
-  if (matches.length === 0) {
-    console.error(
-      'patch: toolsets: findShiftTabAppStateVarInsertionPoint: failed to find function pattern'
-    );
-    return null;
+  if (matchesOld.length > 0) {
+    // Take the last match (closest to the bash mode indicator)
+    const lastMatch = matchesOld[matchesOld.length - 1];
+    if (lastMatch.index !== undefined) {
+      // Return position AFTER the opening brace
+      return lookbackStart + lastMatch.index + lastMatch[0].length;
+    }
   }
 
-  // Take the last match (closest to the bash mode indicator)
-  const lastMatch = matches[matches.length - 1];
-  if (lastMatch.index === undefined) {
-    console.error(
-      'patch: toolsets: findShiftTabAppStateVarInsertionPoint: match has no index'
-    );
-    return null;
+  // New pattern (CC 2.1.15+): function NAME(A){let K=e(...)
+  // CC 2.1.17+: function NAME(A){let K=t(...)
+  // The function uses React compiler's e() or t() for memoization
+  const functionPatternNew =
+    /function ([$\w]+)\([$\w]+\)\{let [$\w]+=[et]\(\d+\)/g;
+  const matchesNew = Array.from(chunk.matchAll(functionPatternNew));
+
+  if (matchesNew.length > 0) {
+    // Take the last match (closest to the bash mode indicator)
+    const lastMatch = matchesNew[matchesNew.length - 1];
+    if (lastMatch.index !== undefined) {
+      // Return position AFTER the opening brace (before 'let')
+      const funcEnd = lastMatch[0].indexOf('{') + 1;
+      return lookbackStart + lastMatch.index + funcEnd;
+    }
   }
 
-  // Return position AFTER the opening brace
-  return lookbackStart + lastMatch.index + lastMatch[0].length;
+  console.error(
+    'patch: toolsets: findShiftTabAppStateVarInsertionPoint: failed to find function pattern'
+  );
+  return null;
 };
 
 /**

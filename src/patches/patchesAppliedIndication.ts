@@ -36,23 +36,36 @@ export const findVersionOutputLocation = (
 const findTweakccVersionLocation = (
   fileContents: string
 ): LocationResult | null => {
-  // Find Claude Code version display
-  const pattern =
+  // Old format: direct createElement with "Claude Code" string
+  // Pattern: X.createElement(Y,{bold:!0},"Claude Code")," ",Z.createElement(W,{dimColor:!0},"v",V)
+  const patternOld =
     /\b([$\w]+)\.createElement\(([$\w]+),\{bold:!0\},"Claude Code"\)," ",([$\w]+)\.createElement\(([$\w]+),\{dimColor:!0\},"v",[$\w]+\)/;
-  const match = fileContents.match(pattern);
-  if (!match || match.index === undefined) {
-    console.error(
-      'patch: patchesAppliedIndication: failed to find Claude Code version pattern'
-    );
-    return null;
+  const matchOld = fileContents.match(patternOld);
+  if (matchOld && matchOld.index !== undefined) {
+    const insertIndex = matchOld.index + matchOld[0].length;
+    return {
+      startIndex: insertIndex,
+      endIndex: insertIndex,
+    };
   }
 
-  // Insert right after this match
-  const insertIndex = match.index + match[0].length;
-  return {
-    startIndex: insertIndex,
-    endIndex: insertIndex,
-  };
+  // New format (CC 2.1.15+): memoized "Claude Code" text followed by version
+  // Pattern: X.createElement(Y,null,varName," ",X.createElement(Y,{dimColor:!0},"v",Z))
+  const patternNew =
+    /\b([$\w]+)\.createElement\(([$\w]+),null,([$\w]+)," ",\1\.createElement\(\2,\{dimColor:!0\},"v",([$\w]+)\)\)/;
+  const matchNew = fileContents.match(patternNew);
+  if (matchNew && matchNew.index !== undefined) {
+    const insertIndex = matchNew.index + matchNew[0].length;
+    return {
+      startIndex: insertIndex,
+      endIndex: insertIndex,
+    };
+  }
+
+  console.error(
+    'patch: patchesAppliedIndication: failed to find Claude Code version pattern'
+  );
+  return null;
 };
 
 /**
@@ -176,8 +189,65 @@ const applyIndicatorPatchesListPatch = (
   chalkVar: string,
   patchesApplies: string[]
 ): string | null => {
-  // Start stack machine at level = 5
-  let level = 4; // This right at the very end of the header component, right after the debug banner.
+  // Build the patches applied list code
+  const lines = [];
+  lines.push(
+    `${reactVar}.createElement(${boxComponent}, { flexDirection: "column" },`
+  );
+  lines.push(
+    `${reactVar}.createElement(${boxComponent}, null, ${reactVar}.createElement(${textComponent}, {color: "success", bold: true}, "┃ "), ${reactVar}.createElement(${textComponent}, {color: "success", bold: true}, "✓ tweakcc patches are applied")),`
+  );
+  for (let item of patchesApplies) {
+    item = item.replace('CHALK_VAR', chalkVar);
+    lines.push(
+      `${reactVar}.createElement(${boxComponent}, null, ${reactVar}.createElement(${textComponent}, {color: "success", bold: true}, "┃ "), ${reactVar}.createElement(${textComponent}, {dimColor: true}, \`  * ${item}\`)),`
+    );
+  }
+  lines.push(')');
+  const patchesListCode = lines.join('');
+
+  // CC 2.1.15+ uses React Compiler memoization
+  // Look for the Fragment pattern: X.createElement(X.Fragment,null,a,b,c,...),K[...]=...,...,K[...]=result;else result=K[...];return result}
+  const searchSection = fileContents.slice(startIndex, startIndex + 3000);
+
+  // Find the Fragment createElement that ends with return - more flexible pattern
+  // Pattern: X.createElement(X.Fragment,null,CHILDREN),K[...]=...;else VAR=K[...];return VAR}
+  const fragmentPattern =
+    /([$\w]+)\.createElement\(\1\.Fragment,null,([^)]+)\),[$\w]+\[\d+\]=[^;]+(?:,[$\w]+\[\d+\]=[^;]+)*;else ([$\w]+)=[$\w]+\[\d+\];return \3\}/;
+  const fragmentMatch = searchSection.match(fragmentPattern);
+
+  if (fragmentMatch && fragmentMatch.index !== undefined) {
+    // Found the memoized Fragment pattern
+    // Match groups: [1]=reactVar, [2]=childrenList, [3]=resultVar
+    const reactVarInFragment = fragmentMatch[1];
+    const childrenList = fragmentMatch[2];
+
+    // Insert our patches list as a child in the Fragment
+    // We need to preserve the rest of the match (memoization assignments and return)
+    const fullMatch = fragmentMatch[0];
+
+    // Find where children list ends (at the closing paren before the comma and cache assignments)
+    const childrenEndIndex = fullMatch.indexOf('),');
+    const afterChildren = fullMatch.slice(childrenEndIndex + 1); // ,K[70]=...;else $6=K[74];return $6}
+
+    // Build new code: react.createElement(react.Fragment,null,oldChildren,newPatchesList),restOfCode
+    const newFragmentCode = `${reactVarInFragment}.createElement(${reactVarInFragment}.Fragment,null,${childrenList},${patchesListCode})${afterChildren}`;
+
+    const absoluteStart = startIndex + fragmentMatch.index;
+    const absoluteEnd = absoluteStart + fragmentMatch[0].length;
+
+    const oldContent = fileContents;
+    const content =
+      fileContents.slice(0, absoluteStart) +
+      newFragmentCode +
+      fileContents.slice(absoluteEnd);
+
+    showDiff(oldContent, content, newFragmentCode, absoluteStart, absoluteEnd);
+    return content;
+  }
+
+  // Old approach for pre-2.1.15 versions - use stack machine
+  let level = 4;
   let currentIndex = startIndex;
   let insertionIndex = -1;
 
@@ -187,7 +257,6 @@ const applyIndicatorPatchesListPatch = (
       level++;
     } else if (ch === ')') {
       if (level === 1) {
-        // Found the location - this is where we add the patches list
         insertionIndex = currentIndex;
         break;
       }
@@ -203,34 +272,18 @@ const applyIndicatorPatchesListPatch = (
     return null;
   }
 
-  // Build the patches applied list (same format as PATCH 3)
-  const lines = [];
-  lines.push(
-    `,${reactVar}.createElement(${boxComponent}, { flexDirection: "column" },`
-  );
-  lines.push(
-    `${reactVar}.createElement(${boxComponent}, null, ${reactVar}.createElement(${textComponent}, {color: "success", bold: true}, "┃ "), ${reactVar}.createElement(${textComponent}, {color: "success", bold: true}, "✓ tweakcc patches are applied")),`
-  );
-  for (let item of patchesApplies) {
-    item = item.replace('CHALK_VAR', chalkVar);
-    lines.push(
-      `${reactVar}.createElement(${boxComponent}, null, ${reactVar}.createElement(${textComponent}, {color: "success", bold: true}, "┃ "), ${reactVar}.createElement(${textComponent}, {dimColor: true}, \`  * ${item}\`)),`
-    );
-  }
-  lines.push('),');
-  const patchesListCode = lines.join('');
-
-  // Insert at the found location
+  // Insert at the found location (old format)
+  const patchesListCodeOld = ',' + patchesListCode + ',';
   const oldContent = fileContents;
   const content =
     fileContents.slice(0, insertionIndex) +
-    patchesListCode +
+    patchesListCodeOld +
     fileContents.slice(insertionIndex);
 
   showDiff(
     oldContent,
     content,
-    patchesListCode,
+    patchesListCodeOld,
     insertionIndex,
     insertionIndex
   );
@@ -244,11 +297,25 @@ const applyIndicatorPatchesListPatch = (
 const findPatchesListLocation = (
   fileContents: string
 ): LocationResult | null => {
-  // 1. Find the same regex as patch 2
-  const pattern =
+  // Old format: direct createElement with "Claude Code" string
+  const patternOld =
     /\b([$\w]+)\.createElement\(([$\w]+),\{bold:!0\},"Claude Code"\)," ",([$\w]+)\.createElement\(([$\w]+),\{dimColor:!0\},"v",[$\w]+\)/;
-  const match = fileContents.match(pattern);
-  if (!match || match.index === undefined) {
+  let matchIndex: number | undefined;
+
+  const matchOld = fileContents.match(patternOld);
+  if (matchOld && matchOld.index !== undefined) {
+    matchIndex = matchOld.index;
+  } else {
+    // New format (CC 2.1.15+): memoized "Claude Code" text followed by version
+    const patternNew =
+      /\b([$\w]+)\.createElement\(([$\w]+),null,([$\w]+)," ",\1\.createElement\(\2,\{dimColor:!0\},"v",([$\w]+)\)\)/;
+    const matchNew = fileContents.match(patternNew);
+    if (matchNew && matchNew.index !== undefined) {
+      matchIndex = matchNew.index;
+    }
+  }
+
+  if (matchIndex === undefined) {
     console.error(
       'patch: patchesAppliedIndication: failed to find Claude Code version pattern for patch 3'
     );
@@ -256,8 +323,8 @@ const findPatchesListLocation = (
   }
 
   // 2. Go back 1500 chars from the match start
-  const lookbackStart = Math.max(0, match.index - 1500);
-  const lookbackSubstring = fileContents.slice(lookbackStart, match.index);
+  const lookbackStart = Math.max(0, matchIndex - 1500);
+  const lookbackSubstring = fileContents.slice(lookbackStart, matchIndex);
 
   // 3. Take the last `}function ([$\w]+)\(`
   const functionPattern = /\}function ([$\w]+)\(/g;

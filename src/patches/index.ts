@@ -407,16 +407,24 @@ export const clearRequireFuncNameCache = (): void => {
  */
 export const findTextComponent = (fileContents: string): string | undefined => {
   // Find the Text component function definition from Ink
-  // The minified Text component has this signature:
-  // function X({color:A,backgroundColor:B,dimColor:C=!1,bold:D=!1,...})
-  const textComponentPattern =
+  // Old format: function X({color:A,backgroundColor:B,dimColor:C=!1,bold:D=!1,...})
+  const textComponentPatternOld =
     /\bfunction ([$\w]+)\(\{color:[$\w]+,backgroundColor:[$\w]+,dimColor:[$\w]+=![01],bold:[$\w]+=![01]/;
-  const match = fileContents.match(textComponentPattern);
-  if (!match) {
-    console.log('patch: findTextComponent: failed to find text component');
-    return undefined;
+  const matchOld = fileContents.match(textComponentPatternOld);
+  if (matchOld) {
+    return matchOld[1];
   }
-  return match[1];
+
+  // New format (CC 2.1.15+): function X(A){...{color:q,backgroundColor:Y,dimColor:z,bold:w,italic:H,underline:J,strikethrough:X...}=A
+  const textComponentPatternNew =
+    /\bfunction ([$\w]+)\([$\w]+\)\{[^}]*\{color:[$\w]+,backgroundColor:[$\w]+,dimColor:[$\w]+,bold:[$\w]+,italic:[$\w]+,underline:[$\w]+,strikethrough:[$\w]+/;
+  const matchNew = fileContents.match(textComponentPatternNew);
+  if (matchNew) {
+    return matchNew[1];
+  }
+
+  console.log('patch: findTextComponent: failed to find text component');
+  return undefined;
 };
 
 /**
@@ -445,7 +453,7 @@ export const findBoxComponent = (fileContents: string): string | undefined => {
     );
   }
 
-  // Method 2: Find Box component by its unique function signature (newer CLI versions 2.1.8+)
+  // Method 2: Find Box component by its unique function signature (CC 2.1.7 - 2.1.9)
   // The internal Box function has a unique signature: function X({children:Y,flexWrap:Z="nowrap",flexDirection:W="row",...
   const internalBoxPattern =
     /\bfunction ([$\w]+)\(\{children:[$\w]+,flexWrap:[$\w]+="nowrap",flexDirection:[$\w]+="row",flexGrow:[$\w]+=[0-9]+,flexShrink:[$\w]+=[0-9]+/;
@@ -467,6 +475,30 @@ export const findBoxComponent = (fileContents: string): string | undefined => {
       `patch: findBoxComponent: found internal Box function (${internalBoxFn}) but no assignment found`
     );
     return internalBoxFn;
+  }
+
+  // Method 3: Find themed Box wrapper by borderColor props pattern (CC 2.1.15+)
+  // The themed wrapper has: function X(A){...{borderColor:Y,borderTopColor:H,borderBottomColor:Q,...children:J,ref:X,...}=A
+  // Then assigned as: S=X})
+  const themedWrapperPattern =
+    /\bfunction ([$\w]+)\([$\w]+\)\{[^}]*\{borderColor:[$\w]+,borderTopColor:[$\w]+,borderBottomColor:[$\w]+,borderLeftColor:[$\w]+,borderRightColor:[$\w]+,children:[$\w]+,ref:[$\w]+/;
+  const themedWrapperMatch = fileContents.match(themedWrapperPattern);
+  if (themedWrapperMatch) {
+    const wrapperFn = themedWrapperMatch[1];
+
+    // Find the variable that's assigned this wrapper: boxVar=wrapperFn}
+    const boxVarAssignPattern = new RegExp(
+      `\\b([$\\w]+)=${escapeIdent(wrapperFn)}\\}`
+    );
+    const boxVarAssignMatch = fileContents.match(boxVarAssignPattern);
+    if (boxVarAssignMatch) {
+      return boxVarAssignMatch[1];
+    }
+    // If no assignment found, use the function name directly
+    console.error(
+      `patch: findBoxComponent: found themed Box wrapper (${wrapperFn}) but no assignment found`
+    );
+    return wrapperFn;
   }
 
   console.error(

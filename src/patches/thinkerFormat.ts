@@ -3,40 +3,52 @@
 import { LocationResult, showDiff } from './index';
 
 const getThinkerFormatLocation = (oldFile: string): LocationResult | null => {
-  const approxAreaPattern =
+  // CC 2.1.15+ format: Look for the pattern directly
+  // Pattern: JA=(X??x?.activeForm??c)+"…"
+  const newFormatPattern =
+    /([$\w]+)=\(([^)]+\?\?[$\w]+\?\.activeForm\?\?[$\w]+)\)\+"(?:…|\\u2026)"/;
+  const newFormatMatch = oldFile.match(newFormatPattern);
+
+  if (newFormatMatch && newFormatMatch.index !== undefined) {
+    return {
+      startIndex: newFormatMatch.index + newFormatMatch[1].length,
+      endIndex: newFormatMatch.index + newFormatMatch[0].length,
+      identifiers: [newFormatMatch[2]], // The expression inside parens (X??x?.activeForm??c)
+    };
+  }
+
+  // Old format: spinnerTip:X,Y:Z,overrideMessage:W,.{300}
+  const approxAreaPatternOld =
     /spinnerTip:[$\w]+,(?:[$\w]+:[$\w]+,)*overrideMessage:[$\w]+,.{300}/;
-  const approxAreaMatch = oldFile.match(approxAreaPattern);
+  const approxAreaMatchOld = oldFile.match(approxAreaPatternOld);
 
-  if (!approxAreaMatch || approxAreaMatch.index == undefined) {
-    console.error('patch: thinker format: failed to find approxAreaMatch');
-    return null;
+  if (approxAreaMatchOld && approxAreaMatchOld.index !== undefined) {
+    // Search within a range of 1000 characters to support older CC versions
+    const searchSection = oldFile.slice(
+      approxAreaMatchOld.index,
+      approxAreaMatchOld.index + 1000
+    );
+
+    // New nullish format: N=(Y??C?.activeForm??L)+"…"
+    const formatPattern = /([$\w]+)(=\(([^;]{1,200}?)\)\+"(?:…|\\u2026)")/;
+    const formatMatch = searchSection.match(formatPattern);
+
+    if (formatMatch && formatMatch.index !== undefined) {
+      return {
+        startIndex:
+          approxAreaMatchOld.index + formatMatch.index + formatMatch[1].length,
+        endIndex:
+          approxAreaMatchOld.index +
+          formatMatch.index +
+          formatMatch[1].length +
+          formatMatch[2].length,
+        identifiers: [formatMatch[3]],
+      };
+    }
   }
 
-  // Search within a range of 1000 characters to support CC 2.0.76+
-  const searchSection = oldFile.slice(
-    approxAreaMatch.index,
-    approxAreaMatch.index + 1000
-  );
-
-  // New nullish format: N=(Y??C?.activeForm??L)+"…"
-  const formatPattern = /([$\w]+)(=\(([^;]{1,200}?)\)\+"(?:…|\\u2026)")/;
-  const formatMatch = searchSection.match(formatPattern);
-
-  if (!formatMatch || formatMatch.index == undefined) {
-    console.error('patch: thinker format: failed to find formatMatch');
-    return null;
-  }
-
-  return {
-    startIndex:
-      approxAreaMatch.index + formatMatch.index + formatMatch[1].length,
-    endIndex:
-      approxAreaMatch.index +
-      formatMatch.index +
-      formatMatch[1].length +
-      formatMatch[2].length,
-    identifiers: [formatMatch[3]],
-  };
+  console.error('patch: thinker format: failed to find formatMatch');
+  return null;
 };
 
 export const writeThinkerFormat = (

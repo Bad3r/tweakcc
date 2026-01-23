@@ -9,13 +9,31 @@ import {
 const getUserMessageDisplayLocation = (
   oldFile: string
 ): LocationResult | null => {
+  // CC 2.1.15+ format: memoized with K[] cache
+  // Pattern: O=NKA.createElement(N,{backgroundColor:"userMessageBackground"},X,NKA.createElement(N,{color:"text"},J)),K[...]=J,K[...]=O;else O=K[...];return O
+  const memoizedPattern =
+    /([$\w]+)=([$\w]+)\.createElement\(([$\w]+),\{backgroundColor:"userMessageBackground"\},([$\w]+),\2\.createElement\(\3,\{color:"text"\},([$\w]+)\)\),[$\w]+\[\d+\]=\5,[$\w]+\[\d+\]=\1;else \1=[$\w]+\[\d+\];return \1/;
+  const memoizedMatch = oldFile.match(memoizedPattern);
+  if (memoizedMatch && memoizedMatch.index !== undefined) {
+    return {
+      startIndex: memoizedMatch.index,
+      endIndex: memoizedMatch.index + memoizedMatch[0].length,
+      identifiers: [
+        memoizedMatch[2], // React var (NKA)
+        memoizedMatch[3], // Text component (N)
+        memoizedMatch[5], // Message var (J)
+        memoizedMatch[1], // Output var (O)
+        'memoized_format',
+      ],
+    };
+  }
+
   // New format (2.0.77+): nested structure with pointer icon and separate color components
   // npm: return _W.createElement(C,{backgroundColor:"userMessageBackground"},...rJ.createElement(C,{color:"text"},V))
-  // native: return rJ.createElement(V,{backgroundColor:"userMessageBackground"},...rJ.createElement(V,{color:"text"},U))
   const newMessageDisplayPattern =
     /return ([$\w]+)\.createElement\(([$\w]+),\{backgroundColor:"userMessageBackground"\},([$\w]+)\.createElement\([$\w]+,\{color:"subtle"\},([$\w]+)\.pointer," "\),[$\w]+\.createElement\([$\w]+,\{color:"text"\},([$\w]+)\)\)/;
   const newMessageDisplayMatch = oldFile.match(newMessageDisplayPattern);
-  if (newMessageDisplayMatch && newMessageDisplayMatch.index != undefined) {
+  if (newMessageDisplayMatch && newMessageDisplayMatch.index !== undefined) {
     return {
       startIndex: newMessageDisplayMatch.index,
       endIndex: newMessageDisplayMatch.index + newMessageDisplayMatch[0].length,
@@ -33,7 +51,7 @@ const getUserMessageDisplayLocation = (
   const oldMessageDisplayPattern =
     /return ([$\w]+)\.createElement\(([$\w]+),\{backgroundColor:"userMessageBackground",color:"text"\},"> ",([$\w]+)\+" "\);/;
   const oldMessageDisplayMatch = oldFile.match(oldMessageDisplayPattern);
-  if (oldMessageDisplayMatch && oldMessageDisplayMatch.index != undefined) {
+  if (oldMessageDisplayMatch && oldMessageDisplayMatch.index !== undefined) {
     return {
       startIndex: oldMessageDisplayMatch.index,
       endIndex: oldMessageDisplayMatch.index + oldMessageDisplayMatch[0].length,
@@ -180,9 +198,17 @@ export const writeUserMessageDisplay = (
     if (inverse) chalkChain += '.inverse';
   }
 
-  const [reactVar, textComponent, messageVar, formatType] =
-    location.identifiers!;
-  const isNewFormat = formatType === 'new_format';
+  const formatType = location.identifiers![location.identifiers!.length - 1];
+  let reactVar: string,
+    textComponent: string,
+    messageVar: string,
+    outputVar: string | undefined;
+
+  if (formatType === 'memoized_format') {
+    [reactVar, textComponent, messageVar, outputVar] = location.identifiers!;
+  } else {
+    [reactVar, textComponent, messageVar] = location.identifiers!;
+  }
 
   // Replace {} in format string with the message variable
   const formattedMessage =
@@ -190,7 +216,11 @@ export const writeUserMessageDisplay = (
 
   let newContent: string;
 
-  if (isNewFormat) {
+  if (formatType === 'memoized_format') {
+    // CC 2.1.15+ memoized format: we need to preserve the memoization structure
+    // Original: O=NKA.createElement(N,{backgroundColor:"userMessageBackground"},X,NKA.createElement(N,{color:"text"},J)),K[5]=J,K[6]=O;else O=K[6];return O
+    newContent = `${outputVar}=${reactVar}.createElement(${boxComponent},${boxAttrsObjStr},${reactVar}.createElement(${textComponent},${textAttrsObjStr},${needsChalk ? chalkChain + '(' : ''}${formattedMessage}${needsChalk ? ')' : ''}));return ${outputVar}`;
+  } else if (formatType === 'new_format') {
     // New format: preserve the pointer icon structure but apply customizations
     newContent = `
 return ${reactVar}.createElement(
